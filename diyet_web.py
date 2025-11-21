@@ -5,10 +5,10 @@ import datetime
 from datetime import timedelta
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Diyetisyen Klinik Yönetimi Pro", layout="wide", page_icon="🥗")
+st.set_page_config(page_title="Diyetisyen Klinik Yönetimi Pro", layout="wide", page_icon="🩺")
 
 # --- VERİTABANI ---
-DB_NAME = 'klinik_v3.db'
+DB_NAME = 'klinik_v4.db'
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -22,30 +22,54 @@ def init_db():
                   boy REAL, 
                   baslangic_kilo REAL, 
                   hedef_kilo REAL,
+                  bmi REAL,
                   bmh REAL, 
                   tdee REAL, 
                   planlanan_kalori INTEGER, 
-                  tahmini_sure_hafta REAL,
                   notlar TEXT)''')
     conn.commit()
     conn.close()
 
 init_db()
 
-# --- HESAPLAMA MOTORU ---
-def hesapla_bmh_tdee(cinsiyet, kilo, boy, yas, akt_katsayi):
-    # Mifflin-St Jeor
+# --- GELİŞMİŞ HESAPLAMA MOTORU ---
+def detayli_analiz(cinsiyet, kilo, boy, yas, akt_katsayi):
+    # 1. BMI Hesapla
+    boy_m = boy / 100
+    bmi = kilo / (boy_m ** 2)
+    
+    # 2. İdeal Kilo Aralığı (BMI 18.5 - 24.9)
+    ideal_min = 18.5 * (boy_m ** 2)
+    ideal_max = 24.9 * (boy_m ** 2)
+    ideal_ort = 22.0 * (boy_m ** 2) # Ortalama ideal
+    
+    # 3. İdeal Kilo (Hamwi Formülü - Eski ama yaygın pratik referans)
+    if cinsiyet == "Erkek":
+        ibw_hamwi = 50 + 2.3 * ((boy / 2.54) - 60)
+    else:
+        ibw_hamwi = 45.5 + 2.3 * ((boy / 2.54) - 60)
+        
+    # 4. Formüle Ağırlık (Adjusted Body Weight)
+    # Formül: IBW + 0.25 * (Mevcut - IBW)
+    # Genelde Obezite (BMI > 30) durumunda BMH hesaplarken kullanılması önerilir.
+    ajbw = ibw_hamwi + 0.25 * (kilo - ibw_hamwi)
+    
+    # 5. BMH Hesapla (Mifflin-St Jeor)
+    # Standart olarak mevcut kiloyu kullanırız, ancak obezitede uzman formüle ağırlığı tercih edebilir.
+    # Biz varsayılan olarak Mevcut Kilo ile hesaplıyoruz, kararı diyetisyene bırakıyoruz.
     base = (10 * kilo) + (6.25 * boy) - (5 * yas)
     bmh = base + 5 if cinsiyet == "Erkek" else base - 161
+    
     tdee = bmh * akt_katsayi
     
-    # İdeal Kilo (Robinson)
-    boy_m = boy / 100
-    if cinsiyet == "Erkek":
-        ideal = 52 + 1.9 * ((boy / 2.54) - 60)
-    else:
-        ideal = 49 + 1.7 * ((boy / 2.54) - 60)
-    return bmh, tdee, ideal
+    return {
+        "bmi": bmi,
+        "ideal_aralik": (ideal_min, ideal_max),
+        "ideal_ort": ideal_ort,
+        "formule_agirlik": ajbw,
+        "bmh": bmh,
+        "tdee": tdee
+    }
 
 def tarih_hesapla(hafta_sayisi):
     bugun = datetime.date.today()
@@ -59,10 +83,10 @@ if 'analiz_yapildi' not in st.session_state:
 menu = st.sidebar.radio("Klinik Paneli", ["1. Danışan Planlama", "2. Veritabanı"])
 
 if menu == "1. Danışan Planlama":
-    st.title("🎯 Hedef Odaklı Diyet Planlayıcı")
+    st.title("🔬 Profesyonel Diyet Planlayıcı")
     
     # --- GİRİŞ FORMU ---
-    with st.expander("Danışan Bilgileri", expanded=True):
+    with st.expander("Danışan Profil ve Ölçümleri", expanded=True):
         c1, c2, c3 = st.columns(3)
         ad = c1.text_input("Ad Soyad")
         cinsiyet = c2.selectbox("Cinsiyet", ["Kadın", "Erkek"])
@@ -70,122 +94,131 @@ if menu == "1. Danışan Planlama":
         
         c4, c5, c6 = st.columns(3)
         boy = c4.number_input("Boy (cm)", 140, 220, 170)
-        kilo = c5.number_input("Mevcut Kilo (kg)", 40.0, 200.0, 85.0, step=0.1)
-        hedef_kilo = c6.number_input("🎯 Hedeflenen Kilo (kg)", 40.0, 200.0, 75.0, step=0.1)
+        kilo = c5.number_input("Mevcut Kilo (kg)", 40.0, 250.0, 85.0, step=0.1)
         
         akt_dict = {"Sedanter (1.2)": 1.2, "Hafif (1.375)": 1.375, "Orta (1.55)": 1.55, "Yüksek (1.725)": 1.725}
         akt_secim = st.selectbox("Aktivite Seviyesi", list(akt_dict.keys()))
 
-        if st.button("Profili Analiz Et", type="primary"):
-            bmh, tdee, ideal = hesapla_bmh_tdee(cinsiyet, kilo, boy, yas, akt_dict[akt_secim])
+        if st.button("Analiz Et", type="primary"):
+            sonuclar = detayli_analiz(cinsiyet, kilo, boy, yas, akt_dict[akt_secim])
             st.session_state['data'] = {
-                'ad': ad, 'cinsiyet': cinsiyet, 'yas': yas, 'boy': boy, 
-                'kilo': kilo, 'hedef_kilo': hedef_kilo,
-                'bmh': bmh, 'tdee': tdee, 'ideal': ideal
+                'ad': ad, 'cinsiyet': cinsiyet, 'yas': yas, 'boy': boy, 'kilo': kilo,
+                'analiz': sonuclar, 'akt_katsayi': akt_dict[akt_secim]
             }
             st.session_state['analiz_yapildi'] = True
 
-    # --- PLANLAMA EKRANI ---
+    # --- SONUÇ VE PLANLAMA ---
     if st.session_state['analiz_yapildi']:
         d = st.session_state['data']
-        kilo_farki = d['hedef_kilo'] - d['kilo']
+        a = d['analiz'] # Analiz sonuçları
         
         st.divider()
         
-        # Durum Tespiti (Kilo verecek mi alacak mı?)
-        durum = "Koru"
-        if kilo_farki < 0: durum = "Ver"
-        elif kilo_farki > 0: durum = "Al"
+        # 1. METABOLİK TABLO (GELİŞTİRİLMİŞ)
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         
-        col_info1, col_info2 = st.columns([1, 2])
-        
-        with col_info1:
-            st.subheader("📊 Metabolik Tablo")
-            st.write(f"**BMH:** {int(d['bmh'])} kcal")
-            st.write(f"**TDEE (Koruma):** {int(d['tdee'])} kcal")
-            st.write(f"**İdeal Kilo (Teorik):** {int(d['ideal'])} kg")
-            st.metric("Hedefe Uzaklık", f"{abs(kilo_farki):.1f} kg", f"{durum}mesi gerekiyor")
+        # BMI Rengi
+        bmi_renk = "off"
+        if a['bmi'] < 18.5: bmi_durum = "Zayıf"; bmi_renk="off"
+        elif 18.5 <= a['bmi'] < 25: bmi_durum = "Normal"; bmi_renk="normal"
+        elif 25 <= a['bmi'] < 30: bmi_durum = "Fazla Kilolu"; bmi_renk="inverse"
+        else: bmi_durum = "Obez"; bmi_renk="inverse"
 
-        with col_info2:
-            st.subheader("⚙️ Diyet Stratejisi")
+        col_m1.metric("Mevcut BMI", f"{a['bmi']:.1f}", bmi_durum, delta_color=bmi_renk)
+        col_m2.metric("BMH (Mifflin)", f"{int(a['bmh'])} kcal")
+        col_m3.metric("TDEE (Koruma)", f"{int(a['tdee'])} kcal")
+        
+        # Formüle Ağırlık Gösterimi (Sadece Obezite durumunda mantıklı ama hep gösterelim bilgi olsun)
+        if a['bmi'] > 25:
+            col_m4.metric("Formüle Ağırlık (AjBW)", f"{a['formule_agirlik']:.1f} kg", "Düzeltilmiş")
+            st.caption("ℹ️ *Danışan kilolu olduğu için 'Formüle Ağırlık' hesaplandı. Enerji ihtiyacını hesaplarken bu ağırlığı referans alabilirsiniz.*")
+        else:
+            col_m4.metric("İdeal Kilo (Ort)", f"{a['ideal_ort']:.1f} kg")
+
+        st.success(f"✅ **Tıbbi İdeal Kilo Aralığı (BMI 18.5-24.9):** {a['ideal_aralik'][0]:.1f} kg - {a['ideal_aralik'][1]:.1f} kg")
+        
+        st.divider()
+
+        # 2. HEDEF BELİRLEME
+        col_hedef1, col_hedef2 = st.columns([1, 2])
+        
+        with col_hedef1:
+            st.subheader("🎯 Hedef Kilo")
+            # Slider yerine number input daha hassas
+            hedef_kilo = st.number_input("Hedeflenen Kilo (kg)", 40.0, 250.0, value=d['kilo'], step=0.5)
+            kilo_farki = hedef_kilo - d['kilo']
             
-            secilen_kalori = int(d['tdee'])
+            durum_text = ""
+            if kilo_farki < 0: durum_text = "Vermesi Gerekiyor 📉"
+            elif kilo_farki > 0: durum_text = "Alması Gerekiyor 📈"
+            else: durum_text = "Koruması Gerekiyor 🛡️"
+            
+            st.info(f"Durum: **{abs(kilo_farki):.1f} kg** {durum_text}")
+
+        with col_hedef2:
+            st.subheader("⚡ Kalori ve Hız Ayarı")
+            
+            planlanan_kalori = int(a['tdee'])
             tahmini_hafta = 0
             
-            if durum == "Ver":
-                st.info("📉 **Kilo Verme Modu Aktif**")
-                # Kilo verme hız seçenekleri (Bilimsel Defisitler)
-                hiz_secenekleri = {
-                    "Çok Yavaş ve Güvenli (Haftada -0.25 kg)": 275,
-                    "Standart Önerilen (Haftada -0.5 kg)": 550,
-                    "Hızlı (Haftada -0.75 kg)": 825,
-                    "Agresif (Haftada -1.0 kg)": 1100
+            if kilo_farki < 0: # Kilo Verme
+                hiz_opsiyonlari = {
+                    "Yavaş (-0.25 kg/h)": 275,
+                    "Standart (-0.5 kg/h)": 550,
+                    "Hızlı (-0.75 kg/h)": 825,
+                    "Agresif (-1.0 kg/h)": 1100
                 }
+                secim = st.selectbox("Kilo Verme Hızı", list(hiz_opsiyonlari.keys()), index=1)
+                acik = hiz_opsiyonlari[secim]
+                planlanan_kalori = int(a['tdee'] - acik)
                 
-                secim = st.radio("Hedeflenen Hız Nedir?", list(hiz_secenekleri.keys()), index=1)
-                kalori_acigi = hiz_secenekleri[secim]
-                
-                # Kalori Hesabı
-                secilen_kalori = int(d['tdee'] - kalori_acigi)
-                
-                # Süre Hesabı: (Toplam Fark * 7700) / Günlük Açık / 7 Gün
-                gunluk_yag_yakimi_gr = (kalori_acigi / 7700) * 1000 # Örn: 550/7700 = 0.07kg = 71gr
-                haftalik_kayip_kg = (kalori_acigi * 7) / 7700
-                tahmini_hafta = abs(kilo_farki) / haftalik_kayip_kg
+                haftalik_kayip = (acik * 7) / 7700
+                tahmini_hafta = abs(kilo_farki) / haftalik_kayip
                 
                 # Güvenlik Kontrolü
-                if secilen_kalori < d['bmh']:
-                    st.error(f"⚠️ DİKKAT: Hesaplanan {secilen_kalori} kcal, BMH'nin ({int(d['bmh'])}) altındadır! Metabolizmayı yavaşlatabilir.")
-                elif (d['cinsiyet'] == 'Kadın' and secilen_kalori < 1200) or (d['cinsiyet'] == 'Erkek' and secilen_kalori < 1500):
-                    st.warning("⚠️ Kalori çok düşük seviyede. Vitamin/Mineral desteği gerekebilir.")
-                else:
-                    st.success("✅ Kalori güvenli aralıkta.")
+                if planlanan_kalori < a['bmh']:
+                    st.error(f"⚠️ Uyarı: Hedef kalori ({planlanan_kalori}), BMH'nin ({int(a['bmh'])}) altında. Formüle ağırlığı göz önünde bulundurun.")
 
-            elif durum == "Al":
-                st.info("📈 **Kilo Alma Modu Aktif**")
-                hiz_secenekleri_al = {
-                    "Temiz Büyüme (Haftada +0.25 kg)": 275,
-                    "Standart (Haftada +0.5 kg)": 550
+            elif kilo_farki > 0: # Kilo Alma
+                hiz_opsiyonlari_al = {
+                    "Yavaş (+0.25 kg/h)": 275,
+                    "Standart (+0.5 kg/h)": 550
                 }
-                secim = st.radio("Hız Seçimi", list(hiz_secenekleri_al.keys()))
-                fazlalik = hiz_secenekleri_al[secim]
-                secilen_kalori = int(d['tdee'] + fazlalik)
+                secim = st.selectbox("Kilo Alma Hızı", list(hiz_opsiyonlari_al.keys()))
+                fazla = hiz_opsiyonlari_al[secim]
+                planlanan_kalori = int(a['tdee'] + fazla)
                 
-                haftalik_kazanc = (fazlalik * 7) / 7700
+                haftalik_kazanc = (fazla * 7) / 7700
                 tahmini_hafta = abs(kilo_farki) / haftalik_kazanc
-
-            else:
-                st.success("✨ Mevcut kiloyu koruma hedefindesiniz.")
-                secilen_kalori = int(d['tdee'])
-
-            # SONUÇ KUTUSU
+            
+            # SONUÇ KARTI
+            tarih_str = tarih_hesapla(tahmini_hafta) if tahmini_hafta > 0 else "Hedefte"
             st.markdown(f"""
-            <div style="background-color:#d4edda;padding:15px;border-radius:10px;color:black">
-                <h3>🥗 Diyet Kalorisi: <b>{secilen_kalori} kcal</b></h3>
-                <p>📅 Tahmini Hedef Tarihi: <b>{tarih_hesapla(tahmini_hafta)}</b> ({int(tahmini_hafta)} Hafta)</p>
+            <div style="border: 2px solid #4CAF50; padding: 15px; border-radius: 10px; text-align: center;">
+                <h2 style="margin:0; color:#4CAF50">{planlanan_kalori} kcal</h2>
+                <p style="margin:0;">Günlük Beslenme Hedefi</p>
+                <hr>
+                <p>📅 Tahmini Bitiş: <b>{tarih_str}</b> ({int(tahmini_hafta)} Hafta)</p>
             </div>
             """, unsafe_allow_html=True)
             
-            notlar = st.text_area("Özel Klinik Notlar")
-            
-            if st.button("💾 Planı Onayla ve Kaydet"):
+            if st.button("💾 Veritabanına Kaydet"):
                 try:
                     conn = sqlite3.connect(DB_NAME)
                     c = conn.cursor()
                     c.execute('''INSERT INTO danisanlar (tarih, ad_soyad, cinsiyet, yas, boy, 
-                                 baslangic_kilo, hedef_kilo, bmh, tdee, planlanan_kalori, tahmini_sure_hafta, notlar)
+                                 baslangic_kilo, hedef_kilo, bmi, bmh, tdee, planlanan_kalori, notlar)
                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
                               (datetime.date.today(), d['ad'], d['cinsiyet'], d['yas'], d['boy'], 
-                               d['kilo'], d['hedef_kilo'], d['bmh'], d['tdee'], secilen_kalori, round(tahmini_hafta, 1), notlar))
+                               d['kilo'], hedef_kilo, a['bmi'], a['bmh'], a['tdee'], planlanan_kalori, "Auto-Save"))
                     conn.commit()
                     conn.close()
-                    st.balloons()
-                    st.success("Kayıt Başarılı!")
+                    st.success("Danışan planı kaydedildi!")
                 except Exception as e:
-                    st.error(f"Hata: {e}")
+                    st.error(e)
 
 elif menu == "2. Veritabanı":
-    st.title("📂 Danışan Takibi")
+    st.title("📂 Danışan Listesi")
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT * FROM danisanlar ORDER BY id DESC", conn)
     conn.close()
