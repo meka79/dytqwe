@@ -2,19 +2,17 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import datetime
-from datetime import timedelta
+import altair as alt # Gelişmiş grafikler için
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Diyetisyen Asistanı v10", layout="wide", page_icon="🥑")
+st.set_page_config(page_title="Diyetisyen Klinik v11", layout="wide", page_icon="🩺")
 
-# --- VERİTABANI (SAĞLAMLAŞTIRILMIŞ) ---
-DB_NAME = 'klinik_v10.db'
+# --- VERİTABANI ---
+DB_NAME = 'klinik_v11.db'
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    
-    # Danışanlar Tablosu
     c.execute('''CREATE TABLE IF NOT EXISTS danisanlar
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   ad_soyad TEXT UNIQUE, 
@@ -24,7 +22,6 @@ def init_db():
                   telefon TEXT,
                   kayit_tarihi TEXT)''')
     
-    # Ölçümler Tablosu
     c.execute('''CREATE TABLE IF NOT EXISTS olcumler
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   danisan_id INTEGER,
@@ -40,7 +37,6 @@ def init_db():
                   planlanan_kalori INTEGER,
                   notlar TEXT,
                   FOREIGN KEY(danisan_id) REFERENCES danisanlar(id))''')
-    
     conn.commit()
     conn.close()
 
@@ -48,36 +44,37 @@ init_db()
 
 # --- BİLİMSEL HESAPLAMA MOTORU ---
 def bilimsel_analiz(cinsiyet, kilo, boy, yas, akt_katsayi, bel, kalca):
-    # 1. BMI Hesapla
+    # 1. BMI
     boy_m = boy / 100.0
     bmi = kilo / (boy_m ** 2)
     
-    # 2. İdeal Kilo Aralığı (BMI 18.5 - 24.9 arası)
-    # Formül: Kilo = BMI * Boy(m)²
+    # 2. İdeal Kilo Aralığı (WHO: 18.5 - 24.9)
     ideal_min_kilo = 18.5 * (boy_m ** 2)
     ideal_max_kilo = 24.9 * (boy_m ** 2)
+    ideal_ortalama = (ideal_min_kilo + ideal_max_kilo) / 2
     
-    # 3. Obezite Kontrolü ve AjBW (Düzeltilmiş Ağırlık)
+    # 3. İdeal Bel Çevresi (IDF Standartları)
+    # Erkek: < 94 cm (Risk Başlangıcı), Kadın: < 80 cm
+    if cinsiyet == "Erkek":
+        ideal_bel_limit = 94.0
+    else:
+        ideal_bel_limit = 80.0
+
+    # 4. Obezite Kontrolü ve AjBW
     hesap_agirligi = kilo
     kullanilan_metod = "Mevcut Kilo"
     
-    # Eğer BMI 30'un üzerindeyse matematiksel idealin ortasını baz alarak düzeltme yap
-    ideal_ortalama = (ideal_min_kilo + ideal_max_kilo) / 2
-    
     if bmi > 30:
-        # AjBW = İdeal + 0.25 * (Mevcut - İdeal)
         ajbw = ideal_ortalama + 0.25 * (kilo - ideal_ortalama)
         hesap_agirligi = ajbw
         kullanilan_metod = "Düzeltilmiş Ağırlık (AjBW)"
     
-    # 4. BMH (Mifflin-St Jeor)
+    # 5. BMH & TDEE
     base = (10 * hesap_agirligi) + (6.25 * boy) - (5 * yas)
     bmh = base + 5 if cinsiyet == "Erkek" else base - 161
-    
-    # 5. TDEE
     tdee = bmh * akt_katsayi
     
-    # 6. Sağlık Risk Analizi (WHR - Bel/Kalça)
+    # 6. Risk Analizi (WHR)
     whr = 0
     risk_text = "Veri Yok"
     if bel > 0 and kalca > 0:
@@ -85,12 +82,12 @@ def bilimsel_analiz(cinsiyet, kilo, boy, yas, akt_katsayi, bel, kalca):
         limit = 0.9 if cinsiyet == "Erkek" else 0.85
         risk_text = "Yüksek Risk ⚠️" if whr > limit else "Düşük Risk ✅"
 
-    # 7. Su İhtiyacı (35ml/kg)
     su = kilo * 0.035
     
     return {
         "bmi": bmi,
         "ideal_aralik": (ideal_min_kilo, ideal_max_kilo),
+        "ideal_bel": ideal_bel_limit,
         "bmh": bmh,
         "tdee": tdee,
         "kullanilan_metod": kullanilan_metod,
@@ -99,23 +96,14 @@ def bilimsel_analiz(cinsiyet, kilo, boy, yas, akt_katsayi, bel, kalca):
         "su": su
     }
 
-# --- YARDIMCI SQL FONKSİYONLARI ---
-def danisan_getir_id(d_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT * FROM danisanlar WHERE id=?", (d_id,))
-    d = c.fetchone()
-    conn.close()
-    return d
-
+# --- SQL FONKSİYONLARI ---
 def danisan_kilo_guncelle_ve_id_getir(ad_soyad):
-    # İsimden ID bulur
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT id, dogum_yili, boy, cinsiyet FROM danisanlar WHERE ad_soyad=?", (ad_soyad,))
     result = c.fetchone()
     conn.close()
-    return result # (id, dogum, boy, cinsiyet)
+    return result
 
 def yeni_danisan_kaydet_ve_getir(ad, cinsiyet, d_yili, boy, tel):
     try:
@@ -124,12 +112,11 @@ def yeni_danisan_kaydet_ve_getir(ad, cinsiyet, d_yili, boy, tel):
         c.execute("INSERT INTO danisanlar (ad_soyad, cinsiyet, dogum_yili, boy, telefon, kayit_tarihi) VALUES (?, ?, ?, ?, ?, ?)",
                   (ad, cinsiyet, d_yili, boy, tel, datetime.date.today()))
         conn.commit()
-        # EN ÖNEMLİ DÜZELTME: Kayıt edilen satırın ID'sini anında alıyoruz.
         yeni_id = c.lastrowid 
         conn.close()
         return yeni_id
     except sqlite3.IntegrityError:
-        return None # İsim çakışması varsa
+        return None
 
 def olcum_kaydet_db(d_id, kilo, hedef, bel, kalca, bmi, bmh, tdee, su, plan, notlar):
     try:
@@ -143,32 +130,28 @@ def olcum_kaydet_db(d_id, kilo, hedef, bel, kalca, bmi, bmh, tdee, su, plan, not
         conn.close()
         return True
     except Exception as e:
-        st.error(f"Veritabanı Hatası: {e}")
         return False
 
 # --- ARAYÜZ ---
+st.sidebar.header("Diyetisyen Asistanı v11")
 menu = st.sidebar.radio("Menü", ["1. Danışan Kabul & Analiz", "2. Danışan Dosyası (Takip)"])
 
 # ---------------------------------------------------------
-# TAB 1: ANALİZ (GİRİŞ)
+# TAB 1: ANALİZ
 # ---------------------------------------------------------
 if menu == "1. Danışan Kabul & Analiz":
     st.title("🔬 Yeni Analiz / Seans")
     
-    # Session State Başlatma (Verilerin kaybolmaması için)
     if 'analiz_sonucu' not in st.session_state:
         st.session_state['analiz_sonucu'] = None
     
-    # İSİM VE MOD SEÇİMİ
     conn = sqlite3.connect(DB_NAME)
     df_d = pd.read_sql("SELECT ad_soyad FROM danisanlar", conn)
     conn.close()
     isimler = df_d['ad_soyad'].tolist()
     
-    # GÜNCELLEME 1: Yeni Kayıt SOLDA, Mevcut Danışan SAĞDA
     mod = st.radio("İşlem Türü:", ["Yeni Kayıt", "Mevcut Danışan"], horizontal=True)
     
-    # Form Değişkenleri
     ad_soyad_val = ""
     cinsiyet_val = "Kadın"
     yas_val = 30
@@ -182,58 +165,40 @@ if menu == "1. Danışan Kabul & Analiz":
         cinsiyet_val = c2.selectbox("Cinsiyet", ["Kadın", "Erkek"])
         yas_val = c1.number_input("Yaş", 10, 90, 30)
         boy_val = c2.number_input("Boy (cm)", 140.0, 220.0, 170.0, step=1.0)
-        tel_val = c1.text_input("Telefon (İsteğe bağlı)")
+        tel_val = c1.text_input("Telefon")
         
-    else: # Mevcut Danışan
+    else:
         ad_soyad_val = st.selectbox("Danışan Seç:", isimler)
         if ad_soyad_val:
-            # Otomatik doldur
             bilgi = danisan_kilo_guncelle_ve_id_getir(ad_soyad_val)
             if bilgi:
-                # bilgi = (id, dogum_yili, boy, cinsiyet)
                 cinsiyet_val = bilgi[3]
                 boy_val = bilgi[2]
                 yas_val = datetime.date.today().year - bilgi[1]
-                st.info(f"👤 **{ad_soyad_val}** seçildi. | {yas_val} Yaş | {boy_val} cm")
+                st.info(f"👤 **{ad_soyad_val}** | {yas_val} Yaş | {boy_val} cm")
 
     st.markdown("---")
-    
-    # ÖLÇÜM GİRİŞİ
     st.markdown("##### ⚖️ Antropometrik Ölçümler")
     col1, col2, col3, col4 = st.columns(4)
     kilo = col1.number_input("Güncel Kilo (kg)", 40.0, 250.0, 80.0, step=0.1)
     hedef = col2.number_input("Hedef (kg)", 40.0, 250.0, 70.0, step=0.1)
-    bel = col3.number_input("Bel Çevresi (cm)", 50.0, 200.0, 80.0, step=0.5)
+    bel = col3.number_input("Bel Çevresi (cm)", 50.0, 200.0, 85.0, step=0.5)
     kalca = col4.number_input("Kalça Çevresi (cm)", 50.0, 200.0, 100.0, step=0.5)
     
     akt_dict = {"Sedanter (1.2)": 1.2, "Hafif (1.375)": 1.375, "Orta (1.55)": 1.55, "Yüksek (1.725)": 1.725}
     akt = st.selectbox("Aktivite Düzeyi", list(akt_dict.keys()))
     
-    # HESAPLAMA BUTONU
-    # Butona basınca sonucu session_state'e atacağız ki slider oynayınca kaybolmasın
     if st.button("📊 Analiz Et ve Planla", type="primary", use_container_width=True):
         if mod == "Yeni Kayıt" and not ad_soyad_val:
-            st.error("Lütfen Ad Soyad giriniz.")
+            st.error("İsim giriniz.")
         else:
-            # Hesaplamayı yap
             res = bilimsel_analiz(cinsiyet_val, kilo, boy_val, yas_val, akt_dict[akt], bel, kalca)
-            
-            # Sonucu hafızaya kaydet
             st.session_state['analiz_sonucu'] = {
-                'res': res,
-                'ad': ad_soyad_val,
-                'cinsiyet': cinsiyet_val,
-                'yas': yas_val,
-                'boy': boy_val,
-                'mod': mod,
-                'tel': tel_val,
-                'kilo': kilo,
-                'hedef': hedef,
-                'bel': bel,
-                'kalca': kalca
+                'res': res, 'ad': ad_soyad_val, 'cinsiyet': cinsiyet_val, 'yas': yas_val,
+                'boy': boy_val, 'mod': mod, 'tel': tel_val, 'kilo': kilo,
+                'hedef': hedef, 'bel': bel, 'kalca': kalca
             }
 
-    # --- SONUÇLARIN GÖSTERİMİ (Slider oynasa bile burası çalışır) ---
     if st.session_state['analiz_sonucu'] is not None:
         data = st.session_state['analiz_sonucu']
         res = data['res']
@@ -241,168 +206,123 @@ if menu == "1. Danışan Kabul & Analiz":
         st.markdown("---")
         st.markdown("### 📋 Analiz Raporu")
         
-        # 1. Satır: Temel Metrikler
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("BMI", f"{res['bmi']:.1f}")
         m2.metric("BMH", f"{int(res['bmh'])} kcal", help=f"Metod: {res['kullanilan_metod']}")
-        m3.metric("TDEE (Koruma)", f"{int(res['tdee'])} kcal")
+        m3.metric("TDEE", f"{int(res['tdee'])} kcal")
         m4.metric("Su İhtiyacı", f"{res['su']:.1f} Lt")
         
-        # 2. Satır: Risk ve İdeal
+        # --- YENİ KISIM: İDEAL ÖLÇÜLER ---
+        st.markdown("##### 💎 İdeal Vücut Hedefleri")
         r1, r2 = st.columns(2)
         with r1:
-            # GÜNCELLEME 3: İdeal Kilo Aralığı
-            st.info(f"💎 **İdeal Kilo Aralığı:** {res['ideal_aralik'][0]:.1f} kg - {res['ideal_aralik'][1]:.1f} kg")
+            st.info(f"**İdeal Kilo Aralığı:** {res['ideal_aralik'][0]:.1f} kg - {res['ideal_aralik'][1]:.1f} kg")
         with r2:
-            renk = "red" if "Yüksek" in res['risk_text'] else "green"
-            st.markdown(f"🩺 **Hastalık Riski (Bel/Kalça):** :{renk}[{res['risk_text']}]")
-        
-        # PLANLAMA KISMI (SLIDER BURADA)
+            # Bel hedefi gösterimi
+            icon = "✅" if data['bel'] < res['ideal_bel'] else "⚠️"
+            st.warning(f"**İdeal Bel Çevresi:** < {res['ideal_bel']} cm (Sizinki: {data['bel']} cm {icon})")
+            
+        # Planlama Slider...
         st.markdown("---")
-        st.subheader("Target & Plan")
+        st.subheader("🎯 Hedef Planlama")
         
         fark = data['hedef'] - data['kilo']
-        durum = "Koruma"
-        if fark < 0: durum = "Kilo Verme"
-        elif fark > 0: durum = "Kilo Alma"
+        durum = "Kilo Verme" if fark < 0 else ("Kilo Alma" if fark > 0 else "Koruma")
         
         p1, p2 = st.columns([2, 1])
         with p1:
             plan_kalori = int(res['tdee'])
-            
             if durum == "Kilo Verme":
-                # GÜNCELLEME 2: Slider oynayınca form resetlenmemesi için session state kullandık
-                hiz = st.select_slider("Defisit (Kalori Açığı) Belirle:", 
-                                       options=["Hafif (-250)", "Orta (-500)", "Yüksek (-750)", "Agresif (-1000)"], 
-                                       value="Orta (-500)")
+                hiz = st.select_slider("Defisit (Kalori Açığı):", ["Hafif (-250)", "Orta (-500)", "Yüksek (-750)"], value="Orta (-500)")
                 eksilen = int(hiz.split("(")[1].replace(")", ""))
                 plan_kalori = int(res['tdee'] + eksilen)
-                
             elif durum == "Kilo Alma":
-                hiz = st.select_slider("Kalori Fazlası Belirle:", 
-                                       options=["Hafif (+250)", "Orta (+500)", "Yüksek (+750)"], 
-                                       value="Orta (+500)")
-                eklenen = int(hiz.split("(")[1].replace(")", ""))
-                plan_kalori = int(res['tdee'] + eklenen)
+                plan_kalori = int(res['tdee'] + 400)
                 
-            # Sonuç Kartı
             st.markdown(f"""
             <div style="background-color:#262730; padding:15px; border-radius:10px; border:1px solid #4CAF50; text-align:center;">
                 <h2 style="margin:0; color:#4CAF50;">{plan_kalori} kcal</h2>
-                <p style="margin:0; color:white;">Hedeflenen Günlük Enerji</p>
+                <p style="margin:0; color:white;">Hedef Günlük Kalori</p>
             </div>
             """, unsafe_allow_html=True)
             
-            # Güvenlik Uyarısı
-            if plan_kalori < res['bmh']:
-                if res['bmi'] > 30:
-                    st.info("Not: Obezite yönetiminde BMH altı planlamalar uzman kontrolünde yapılabilir.")
-                else:
-                    st.warning(f"⚠️ DİKKAT: {plan_kalori} kcal, kişinin Bazal Metabolizması ({int(res['bmh'])}) altındadır!")
+            # Güvenlik uyarısı
+            if plan_kalori < res['bmh'] and res['bmi'] < 30:
+                 st.warning(f"⚠️ Dikkat: BMH ({int(res['bmh'])}) altına iniyorsunuz.")
 
         with p2:
-            notlar = st.text_area("Seans Notları", "Diyet programı düzenlendi.")
-            
-            # GÜNCELLEME 4: Kaydetme İşlemi
+            notlar = st.text_area("Seans Notları", "Rutin kontrol.")
             if st.button("💾 SEANSI KAYDET", type="secondary"):
-                try:
-                    d_id = -1
-                    
-                    if data['mod'] == "Yeni Kayıt":
-                        # 1. Yeni kişiyi kaydet ve ID'sini al
-                        yeni_id = yeni_danisan_kaydet_ve_getir(data['ad'], data['cinsiyet'], datetime.date.today().year - data['yas'], data['boy'], data['tel'])
-                        if yeni_id:
-                            d_id = yeni_id
-                            st.toast(f"Yeni hasta kaydı oluşturuldu: {data['ad']}", icon="✅")
-                        else:
-                            st.error("Bu isimde bir hasta zaten kayıtlı! Lütfen 'Mevcut Danışan' menüsünü kullanın.")
-                    else:
-                        # 2. Mevcut kişinin ID'sini bul
-                        mevcut_bilgi = danisan_kilo_guncelle_ve_id_getir(data['ad'])
-                        if mevcut_bilgi:
-                            d_id = mevcut_bilgi[0]
-                    
-                    # 3. Ölçümü kaydet
-                    if d_id != -1:
-                        if olcum_kaydet_db(d_id, data['kilo'], data['hedef'], data['bel'], data['kalca'], res['bmi'], res['bmh'], res['tdee'], res['su'], plan_kalori, notlar):
-                            st.success(f"✅ {data['ad']} için seans başarıyla kaydedildi!")
-                            # Başarılı kayıttan sonra session state'i temizleyebiliriz veya bırakabiliriz.
-                            # st.session_state['analiz_sonucu'] = None 
-                        else:
-                            st.error("Kayıt sırasında veritabanı hatası.")
-                    else:
-                        st.error("Danışan ID bulunamadı. İşlem iptal.")
-                        
-                except Exception as e:
-                    st.error(f"Beklenmeyen hata: {e}")
+                d_id = -1
+                if data['mod'] == "Yeni Kayıt":
+                    yeni_id = yeni_danisan_kaydet_ve_getir(data['ad'], data['cinsiyet'], datetime.date.today().year - data['yas'], data['boy'], data['tel'])
+                    if yeni_id: d_id = yeni_id
+                    else: st.error("İsim kayıtlı!")
+                else:
+                    mevcut_bilgi = danisan_kilo_guncelle_ve_id_getir(data['ad'])
+                    if mevcut_bilgi: d_id = mevcut_bilgi[0]
+                
+                if d_id != -1:
+                    if olcum_kaydet_db(d_id, data['kilo'], data['hedef'], data['bel'], data['kalca'], res['bmi'], res['bmh'], res['tdee'], res['su'], plan_kalori, notlar):
+                        st.success("✅ Kayıt Başarılı!")
 
 # ---------------------------------------------------------
-# TAB 2: DANIŞAN DOSYASI (TAKİP)
+# TAB 2: DANIŞAN DOSYASI (GELİŞMİŞ GRAFİKLER)
 # ---------------------------------------------------------
 elif menu == "2. Danışan Dosyası (Takip)":
     st.title("📂 Danışan Dosyası")
     
     conn = sqlite3.connect(DB_NAME)
     df_d = pd.read_sql("SELECT ad_soyad FROM danisanlar", conn)
-    conn.close() # Bağlantıyı kapatmayı unutma
+    conn.close()
     
-    if df_d.empty:
-        st.warning("Henüz sisteme kayıtlı danışan bulunmamaktadır.")
-    else:
-        secilen = st.selectbox("Dosyasını Görüntüle:", ["Seçiniz..."] + df_d['ad_soyad'].tolist())
-        
+    if not df_d.empty:
+        secilen = st.selectbox("Dosya Seç:", ["Seçiniz..."] + df_d['ad_soyad'].tolist())
         if secilen != "Seçiniz...":
-            # ID Bul
-            d_bilgi = danisan_kilo_guncelle_ve_id_getir(secilen) # (id, dogum, boy, cins)
+            d_bilgi = danisan_kilo_guncelle_ve_id_getir(secilen)
             d_id = d_bilgi[0]
             
             conn = sqlite3.connect(DB_NAME)
-            # Ölçümleri çek
             df_o = pd.read_sql(f"SELECT * FROM olcumler WHERE danisan_id={d_id} ORDER BY tarih", conn)
             conn.close()
             
             if not df_o.empty:
-                # ÜST BİLGİ KARTI
-                yas_simdi = datetime.date.today().year - d_bilgi[1]
+                # 1. BİLGİ KARTI
+                yas = datetime.date.today().year - d_bilgi[1]
+                st.info(f"👤 **{secilen}** | {yas} Yaş | {d_bilgi[2]} cm | Cinsiyet: {d_bilgi[3]}")
                 
-                st.markdown(f"""
-                <div style="background-color:#2b2c36; padding:10px; border-radius:5px; border-left: 5px solid #ff4b4b;">
-                    <h4>👤 {secilen}</h4>
-                    <p>Cinsiyet: {d_bilgi[3]} | Yaş: {yas_simdi} | Boy: {d_bilgi[2]} cm</p>
-                </div>
-                <br>
-                """, unsafe_allow_html=True)
-                
-                # GRAFİKLER
+                # 2. GELİŞMİŞ GRAFİKLER (ALTAIR) - 0 TABANLI & HEDEF ÇİZGİLİ
+                st.subheader("📈 Gelişim Analizi")
                 c_g1, c_g2 = st.columns(2)
+                
+                # Son hedef kiloyu alalım (Grafiğe çizgi eklemek için)
+                son_hedef = df_o.iloc[-1]['hedef_kilo']
+                
                 with c_g1:
-                    st.subheader("📉 Kilo Takibi")
-                    st.line_chart(df_o.set_index('tarih')['kilo'], color="#4CAF50")
-                
-                with c_g2:
-                    st.subheader("⚠️ Risk (Bel Çevresi)")
-                    if df_o['bel_cevresi'].sum() > 0:
-                        st.line_chart(df_o.set_index('tarih')['bel_cevresi'], color="#FFA500")
-                    else:
-                        st.info("Bel verisi girilmemiş.")
+                    st.markdown("**Kilo ve Hedef Grafiği**")
+                    # Ana Kilo Çizgisi
+                    line = alt.Chart(df_o).mark_line(point=True).encode(
+                        x=alt.X('tarih', title='Tarih'),
+                        y=alt.Y('kilo', title='Kilo (kg)', scale=alt.Scale(domain=[0, df_o['kilo'].max() + 20])),
+                        tooltip=['tarih', 'kilo', 'hedef_kilo']
+                    ).properties(height=300)
+                    
+                    # Hedef Çizgisi (Yeşil Kesikli)
+                    rule = alt.Chart(pd.DataFrame({'y': [son_hedef]})).mark_rule(color='green', strokeDash=[5, 5]).encode(y='y')
+                    
+                    st.altair_chart(line + rule, use_container_width=True)
+                    st.caption(f"Yeşil Çizgi: Hedef ({son_hedef} kg)")
 
-                # DETAYLI TABLO
-                st.subheader("📋 Tüm Seanslar")
-                gosterim = df_o[['id', 'tarih', 'kilo', 'hedef_kilo', 'bmi', 'planlanan_kalori', 'notlar']]
-                st.dataframe(gosterim, use_container_width=True, hide_index=True)
-                
-                # SİLME İŞLEMİ
-                with st.expander("🗑️ Yanlış Kayıt Silme Paneli"):
-                    c_del1, c_del2 = st.columns([3, 1])
-                    sil_id = c_del1.number_input("Silinecek Seans ID'si (Tablodan bakınız)", min_value=0, step=1)
-                    if c_del2.button("Kayıt Sil"):
-                        conn = sqlite3.connect(DB_NAME)
-                        cur = conn.cursor()
-                        cur.execute("DELETE FROM olcumler WHERE id=?", (sil_id,))
-                        conn.commit()
-                        conn.close()
-                        st.success("Kayıt silindi. Güncelleniyor...")
-                        st.rerun()
+                with c_g2:
+                    st.markdown("**Bel Çevresi ve İdeal Sınır**")
+                    ideal_bel = 94.0 if d_bilgi[3] == "Erkek" else 80.0
+                    
+                    if df_o['bel_cevresi'].sum() > 0:
+                        # Bel Çizgisi
+                        line_bel = alt.Chart(df_o).mark_line(color='orange', point=True).encode(
+                            x='tarih',
+                            y=alt.Y('bel_cevresi', title='Bel (cm)', scale=alt.Scale(domain=[0, df_o['bel_cevresi'].max() + 20])),
+                            tooltip=['tarih', 'bel_cevresi']
+                        ).properties(height=300)
                         
-            else:
-                st.info(f"{secilen} sisteme kayıtlı ancak henüz bir ölçüm/seans girilmemiş.")
+                        # İdeal Bel S
