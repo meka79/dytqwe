@@ -2,21 +2,20 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import datetime
-import altair as alt # Gelişmiş grafikler için
-import json # Test cevaplarını kaydetmek için
+import altair as alt
+import json # Yeni modül için gerekli
 
 # --- AYARLAR ---
 st.set_page_config(page_title="Klinik Yönetim v13 (Test Modülü Eklendi)", layout="wide", page_icon="🥗")
 
-# --- VERİTABANI ---
-# Mevcut v12'yi değiştirmeden v13 için yeni bir DB adı kullanalım.
-DB_NAME = 'klinik_v13.db'
+# --- VERİTABANI --
+DB_NAME = 'klinik_v13.db' # Yeni versiyon için yeni DB adı
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # 1. Tablo: DANIŞANLAR (Mevcut v12 yapısı)
+    # 1. Tablo: DANIŞANLAR (v12'den alınmıştır)
     c.execute('''CREATE TABLE IF NOT EXISTS danisanlar
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   ad_soyad TEXT UNIQUE, 
@@ -26,7 +25,7 @@ def init_db():
                   telefon TEXT,
                   kayit_tarihi TEXT)''')
     
-    # 2. Tablo: ÖLÇÜMLER (Mevcut v12 yapısı)
+    # 2. Tablo: ÖLÇÜMLER (v12'den alınmıştır)
     c.execute('''CREATE TABLE IF NOT EXISTS olcumler
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   danisan_id INTEGER,
@@ -43,13 +42,13 @@ def init_db():
                   notlar TEXT,
                   FOREIGN KEY(danisan_id) REFERENCES danisanlar(id))''')
                   
-    # 3. Tablo: ANAMNEZ TESTLERİ (YENİ MODÜL)
+    # 3. Tablo: ANAMNEZ TESTLERİ (YENİ EKLENEN)
     c.execute('''CREATE TABLE IF NOT EXISTS anamnez_testleri
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   danisan_id INTEGER,
                   tarih TEXT, 
                   skor INTEGER,
-                  cevaplar TEXT,
+                  cevaplar TEXT, 
                   FOREIGN KEY(danisan_id) REFERENCES danisanlar(id))''')
                   
     conn.commit()
@@ -58,11 +57,10 @@ def init_db():
 # DB'yi başlat
 init_db()
 
-# --- VERİTABANI FONKSİYONLARI ---
+# --- VERİTABANI FONKSİYONLARI (v12'den alınmıştır) ---
 
 def danisan_getir_detay(ad_soyad):
     conn = sqlite3.connect(DB_NAME)
-    # Tüm kolonları getiriyoruz: (id, ad_soyad, cinsiyet, dogum_yili, boy, telefon, kayit_tarihi)
     query = "SELECT * FROM danisanlar WHERE ad_soyad=?"
     result = conn.execute(query, (ad_soyad,)).fetchone()
     conn.close()
@@ -71,7 +69,6 @@ def danisan_getir_detay(ad_soyad):
 def son_olcum_getir(danisan_id):
     conn = sqlite3.connect(DB_NAME)
     query = "SELECT * FROM olcumler WHERE danisan_id=? ORDER BY tarih DESC LIMIT 1"
-    # Tüm kolonları çekiyoruz
     cursor = conn.execute(query, (danisan_id,))
     cols = [column[0] for column in cursor.description]
     result = cursor.fetchone()
@@ -97,7 +94,7 @@ def olcum_kaydet_db(data):
         st.error(f"Ölçüm kaydı hatası: {e}")
         return False
 
-# --- HESAPLAMA MOTORU (Mifflin-St Jeor) ---
+# --- HESAPLAMA MOTORU (v12'den alınmıştır) ---
 AKTIVITE_KAT = {
     "Sedanter (Az/Hiç egzersiz)": 1.2,
     "Hafif Aktif (Haftada 1-3 gün)": 1.375,
@@ -120,7 +117,7 @@ def detayli_analiz(cinsiyet, kilo, boy, yas, akt_katsayi_deger):
     ideal_min_kilo = 18.5 * (boy_m ** 2)
     ideal_max_kilo = 24.9 * (boy_m ** 2)
     
-    # Su İhtiyacı (Örnek: Kilo * 30 ml)
+    # Su İhtiyacı (Kilo * 30 ml)
     su_ihtiyaci = kilo * 30 / 1000 # Litre olarak
     
     return {
@@ -132,7 +129,7 @@ def detayli_analiz(cinsiyet, kilo, boy, yas, akt_katsayi_deger):
         'su_ihtiyaci': round(su_ihtiyaci, 1)
     }
 
-# --- YENİ MODÜL: ANAMNEZ TEST SORULARI ---
+# --- YENİ MODÜL: ANAMNEZ TEST SORULARI ve SKORLAMA ---
 TEST_SORULARI = {
     "1": {"soru": "Günde kaç öğün yemek yiyorsunuz? (Ara öğünler dahil)", "tip": "slider", "min": 2, "max": 7},
     "2": {"soru": "Yemek yerken çoğunlukla ne hissedersiniz?", "tip": "radio", "seçenekler": ["Çok hızlı ve aceleci", "Normal hızda, tadını çıkararak", "Yavaş ve sakin"]},
@@ -145,40 +142,41 @@ TEST_SORULARI = {
 
 def skor_hesapla(cevaplar):
     skor = 0
-    
-    # Soru 2: Yemek Hızı (3 puan: Hızlı)
+    # Soru 2: Hızlı yemek = 3 puan
     if cevaplar.get('2') == "Çok hızlı ve aceleci": skor += 3
     
-    # Soru 3: Tatlı İsteği (3 puan: Her gün, 1 puan: Haftada birkaç kez)
+    # Soru 3: Tatlı İsteği (Her gün=3, Haftada birkaç kez=1)
     if cevaplar.get('3') == "Hemen hemen her gün": skor += 3
     elif cevaplar.get('3') == "Haftada birkaç kez": skor += 1
     
-    # Soru 4: Dışarıdan Yemek (Her dışarıda yemek 2 puan, 4'ten sonrası daha ağır)
+    # Soru 4: Dışarıdan Yemek (Her yemek 2 puan)
     disari_adet = cevaplar.get('4', 0)
     skor += disari_adet * 2
     
-    # Soru 5: Uyku (6 saatten az: 3 puan, 7-8 saat ideal)
+    # Soru 5: Uyku (6 saatten az: 3 puan)
     uyku_saat = cevaplar.get('5', 0)
     if uyku_saat < 6: skor += 3
     
-    # Soru 6: Stres (3 puan: Daha çok yerim)
+    # Soru 6: Stres (Daha çok yerim: 3 puan)
     if cevaplar.get('6') == "Evet, daha çok yerim": skor += 3
     
-    # Soru 7: Su Tüketimi (3 puan: Çok az içiyorum, 1 puan: Bazen unuturum)
+    # Soru 7: Su Tüketimi (Çok az: 3 puan, Unutuyorum: 1 puan)
     if cevaplar.get('7') == "Hayır, çok az içiyorum": skor += 3
     elif cevaplar.get('7') == "Bazen unutuyorum": skor += 1
     
     return skor
 
-# --- ANA UYGULAMA YAPISI ---
+
+# --- ANA UYGULAMA YAPISI (v12'den alınmıştır) ---
 
 st.sidebar.title("Diyetisyen Pro v13")
+# Yeni modül menüye eklendi:
 menu = st.sidebar.radio("Klinik Modülü", 
     ["1. Danışan Kabul & Analiz", "2. Danışan Dosyası (Takip)", "3. Diyet Programı Oluştur", "4. Online Anamnez Testi"]
 )
 
 # ==============================================================================
-# 1. TAB: DANIŞAN KABUL & ANALİZ (Mevcut v12)
+# 1. TAB: DANIŞAN KABUL & ANALİZ
 # ==============================================================================
 if menu == "1. Danışan Kabul & Analiz":
     st.title("👨‍👩‍👧 Danışan Kabul & Analiz")
@@ -220,11 +218,11 @@ if menu == "1. Danışan Kabul & Analiz":
         
         # Hedef Kalori Belirleme
         fark = hedef_kilo - kilo
-        kalori_farki = fark * 7700 / 90 # 1 kg ~ 7700 kcal, hedef 90 gün (3 ay)
+        kalori_farki = fark * 7700 / 90 # 1 kg ~ 7700 kcal, hedef 90 gün (3 ay) baz alınmıştır.
         hedef_kalori = round(analiz['tdee'] + kalori_farki)
         
         st.markdown(f"**Önerilen Günlük Diyet Kalorisi:** **{hedef_kalori} kcal**")
-        st.caption("Not: Bu, 3 aylık tahmini bir hedefe göre otomatik hesaplanmıştır. Manuel düzenleme yapabilirsiniz.")
+        st.caption("Not: Otomatik hesaplanan tahmini değerdir.")
         
         planlanan_kalori = st.number_input("Planlanan Kalori", value=hedef_kalori, step=50)
 
@@ -271,7 +269,7 @@ if menu == "1. Danışan Kabul & Analiz":
             st.error(f"Kayıt sırasında bir hata oluştu: {e}")
 
 # ==============================================================================
-# 2. TAB: DANIŞAN DOSYASI (TAKİP) (Mevcut v12)
+# 2. TAB: DANIŞAN DOSYASI (TAKİP)
 # ==============================================================================
 elif menu == "2. Danışan Dosyası (Takip)":
     st.title("📂 Danışan Dosyası ve Takip")
@@ -281,14 +279,18 @@ elif menu == "2. Danışan Dosyası (Takip)":
     
     if names.empty:
         st.warning("Henüz kayıtlı danışan bulunmamaktadır.")
+        conn.close()
         st.stop()
         
-    secilen_danisan = st.selectbox("Danışan Seçin:", names['ad_soyad'].tolist())
+    secilen_danisan = st.selectbox("Danışan Seçin:", names['ad_soyad'].tolist(), key="takip_secim")
     d_bilgi = danisan_getir_detay(secilen_danisan) # (id, ad, cinsiyet, dyili, boy, tel, k_tarihi)
     danisan_id = d_bilgi[0]
 
     # Ölçüm Geçmişini Çek
     df_olcumler = pd.read_sql(f"SELECT * FROM olcumler WHERE danisan_id={danisan_id} ORDER BY tarih", conn)
+    
+    # Anamnez Testi Geçmişini Çek (YENİ EKLENEN)
+    df_anamnez = pd.read_sql(f"SELECT tarih, skor FROM anamnez_testleri WHERE danisan_id={danisan_id} ORDER BY tarih", conn)
     conn.close()
 
     if df_olcumler.empty:
@@ -310,17 +312,11 @@ elif menu == "2. Danışan Dosyası (Takip)":
             
             y_yas = datetime.date.today().year - d_bilgi[3]
             y_boy = d_bilgi[4]
-            # Basit TDEE hesabı için son planlanan kalori üzerinden aktivite faktörünü tahmin edelim
-            son_tdee = df_olcumler.iloc[-1]['tdee']
-            
-            # Mifflin-St Jeor BMH (Gerekirse bu fonksiyonu dışarıdan çağırmak gerekir)
+            # Aktivite faktörü tahmini: son TDEE / yeni BMH
             y_base = (10 * y_kilo) + (6.25 * y_boy) - (5 * y_yas)
             y_bmh = y_base + 5 if d_bilgi[2] == "Erkek" else y_base - 161
+            tahmini_aktivite_faktor = df_olcumler.iloc[-1]['tdee'] / df_olcumler.iloc[-1]['bmh'] # Önceki katsayıyı koru
             
-            # Aktivite faktörü tahmini (basitçe)
-            tahmini_aktivite_faktor = son_tdee / y_bmh
-            
-            # Yeniden detaylı analiz yapalım
             y_analiz = detayli_analiz(d_bilgi[2], y_kilo, y_boy, y_yas, tahmini_aktivite_faktor)
             
             y_kalori = st.number_input("Planlanan Kalori", value=df_olcumler.iloc[-1]['planlanan_kalori'], step=50)
@@ -362,7 +358,7 @@ elif menu == "2. Danışan Dosyası (Takip)":
     
     # Grafikler
     st.subheader("📈 Gelişim Grafikleri (Altair)")
-    c_g1, c_g2 = st.columns(2)
+    c_g1, c_g2, c_g3 = st.columns(3) # Yeni Grafik için 3 sütun
     
     # Kilo Grafiği
     with c_g1:
@@ -371,18 +367,15 @@ elif menu == "2. Danışan Dosyası (Takip)":
         df_o['tarih'] = pd.to_datetime(df_o['tarih'])
         son_hedef = df_o['hedef_kilo'].iloc[-1]
         
-        # Ana Kilo Çizgisi
         line = alt.Chart(df_o).mark_line(point=True).encode(
             x=alt.X('tarih', title='Tarih'),
             y=alt.Y('kilo', title='Kilo (kg)'),
             tooltip=['tarih', 'kilo', 'hedef_kilo']
         ).properties(height=300)
         
-        # Hedef Çizgisi (Yeşil Kesikli)
         rule = alt.Chart(pd.DataFrame({'y': [son_hedef]})).mark_rule(color='green', strokeDash=[5, 5]).encode(y='y')
         
         st.altair_chart(line + rule, use_container_width=True)
-        st.caption(f"Yeşil Kesikli Çizgi: Hedef ({son_hedef} kg)")
 
     # Bel Çevresi Grafiği
     with c_g2:
@@ -396,16 +389,32 @@ elif menu == "2. Danışan Dosyası (Takip)":
                 tooltip=['tarih', 'bel_cevresi']
             ).properties(height=300)
             
-            # Risk Sınırı Çizgisi
             rule_bel = alt.Chart(pd.DataFrame({'y': [ideal_bel]})).mark_rule(color='red', strokeDash=[5, 5]).encode(y='y')
             
             st.altair_chart(line_bel + rule_bel, use_container_width=True)
-            st.caption(f"Kırmızı Kesikli Çizgi: Sağlık Riski Sınırı ({ideal_bel} cm)")
         else:
             st.info("Bel ölçümü verisi yetersiz.")
-    
+            
+    # Anamnez Testi Grafiği (YENİ EKLENEN)
+    with c_g3:
+        st.markdown("**Hazırbulunuşluk Test Skoru**")
+        
+        if not df_anamnez.empty:
+            df_anamnez['tarih'] = pd.to_datetime(df_anamnez['tarih'])
+            line_skor = alt.Chart(df_anamnez).mark_line(color='#0077b6', point=True).encode(
+                x='tarih',
+                y=alt.Y('skor', title='Risk Skoru'),
+                tooltip=['tarih', 'skor']
+            ).properties(height=300)
+            st.altair_chart(line_skor, use_container_width=True)
+            st.caption(f"Son Skor: {df_anamnez['skor'].iloc[-1]}")
+        else:
+            st.info("Kayıtlı Anamnez Testi yok.")
+
+
     # Tablo ve Silme İşlemleri
     st.subheader("📋 Tüm Seanslar")
+    # v12'deki sütunları koruyoruz
     gosterim = df_olcumler[['id', 'tarih', 'kilo', 'hedef_kilo', 'bmi', 'planlanan_kalori', 'notlar']]
     st.dataframe(gosterim, use_container_width=True, hide_index=True)
     
@@ -422,7 +431,7 @@ elif menu == "2. Danışan Dosyası (Takip)":
 
 
 # ==============================================================================
-# 3. TAB: DİYET PROGRAMI OLUŞTUR (Mevcut v12)
+# 3. TAB: DİYET PROGRAMI OLUŞTUR
 # ==============================================================================
 elif menu == "3. Diyet Programı Oluştur":
     st.title("🥦 Diyet Programı Oluşturucu (BETA)")
@@ -502,8 +511,10 @@ elif menu == "4. Online Anamnez Testi":
                 st.markdown(f"**{key}. {item['soru']}**")
                 
                 if item['tip'] == 'slider':
+                    # Slider'ın başlangıç değerini (varsayılan) minimum yapalım
                     cevaplar[key] = st.slider(f"Soru {key}", item['min'], item['max'], item['min'], step=1, key=f"slider_{key}")
                 elif item['tip'] == 'radio':
+                    # Radio butonu
                     cevaplar[key] = st.radio(f"Seçiminiz {key}", item['seçenekler'], key=f"radio_{key}")
 
             # --- SKORLAMA VE KAYIT ---
