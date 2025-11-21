@@ -257,3 +257,48 @@ elif menu == "2. Danışan Takip & Düzenleme":
                 fark = son - ilk
                 st.caption(f"Toplam Değişim: {fark:.1f} kg")
             else:
+                st.info("Grafik için bu kişiye ait en az 2 ölçüm kaydı gerekli.")
+            
+            # 2. Kayıtlar Tablosu (Filtreli)
+            st.subheader("📋 Geçmiş Kayıtlar")
+            st.dataframe(kisi_df)
+            
+        else:
+            # GENEL GÖRÜNÜM (TÜMÜ)
+            st.subheader("📋 Tüm Kayıtlar")
+            st.dataframe(df)
+
+        st.divider()
+        
+        # B. DÜZENLEME / SİLME ALANI
+        st.subheader("🛠️ Veri Düzenleme & Silme")
+        c_edit1, c_edit2 = st.columns(2)
+        
+        with c_edit1:
+            st.markdown("**🗑️ Kayıt Sil**")
+            sil_id = st.number_input("Silinecek ID Numarası", min_value=0, step=1)
+            if st.button("Kayıt Sil", type="secondary"):
+                try:
+                    c = conn.cursor()
+                    c.execute("DELETE FROM danisanlar WHERE id=?", (sil_id,))
+                    conn.commit()
+                    st.success(f"ID {sil_id} silindi. Tabloyu yenilemek için sayfayı yenileyin.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Hata: {e}")
+        
+        with c_edit2:
+            st.markdown("**📝 Not Güncelle**")
+            upd_id = st.number_input("Güncellenecek ID", min_value=0, step=1)
+            yeni_not = st.text_input("Yeni Not Giriniz")
+            if st.button("Notu Güncelle"):
+                try:
+                    c = conn.cursor()
+                    c.execute("UPDATE danisanlar SET notlar=? WHERE id=?", (yeni_not, upd_id))
+                    conn.commit()
+                    st.success("Not güncellendi.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Hata: {e}")
+
+    conn.close()
