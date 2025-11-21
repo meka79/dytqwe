@@ -1,217 +1,214 @@
 import streamlit as st
 import pandas as pd
+import sqlite3
+import datetime
 from fpdf import FPDF
 
-# --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Diyetisyen Asistanı Pro", layout="wide", page_icon="🥗")
+# --- AYARLAR VE VERİTABANI KURULUMU ---
+st.set_page_config(page_title="Diyetisyen Klinik Yönetimi", layout="wide", page_icon="🩺")
 
-# --- VERİTABANI (Genişletilebilir) ---
-BESINLER = {
-    "Yumurta (Haşlanmış, 1 adet)": {"kcal": 75, "p": 6.3, "k": 0.6, "y": 5.3},
-    "Yulaf Ezmesi (100g)": {"kcal": 370, "p": 13, "k": 59, "y": 7},
-    "Tavuk Göğsü (100g)": {"kcal": 165, "p": 31, "k": 0, "y": 3.6},
-    "Pirinç Pilavı (Pişmiş, 100g)": {"kcal": 130, "p": 2.7, "k": 28, "y": 0.3},
-    "Zeytinyağı (1 Tatlı Kaşığı)": {"kcal": 40, "p": 0, "k": 0, "y": 4.5},
-    "Mevsim Salata (Yağsız, Kase)": {"kcal": 25, "p": 1, "k": 4, "y": 0},
-    "Elma (Orta Boy)": {"kcal": 52, "p": 0.3, "k": 14, "y": 0.2},
-    "Tam Buğday Ekmeği (1 Dilim)": {"kcal": 69, "p": 3.5, "k": 11, "y": 1},
-    "Yoğurt (Tam Yağlı, 1 Kase)": {"kcal": 120, "p": 6, "k": 9, "y": 6},
-    "Ceviz (1 adet)": {"kcal": 26, "p": 0.6, "k": 0.6, "y": 2.5},
-    "Beyaz Peynir (30g)": {"kcal": 50, "p": 5, "k": 1, "y": 3},
-    "Muz (Orta Boy)": {"kcal": 105, "p": 1.3, "k": 27, "y": 0.4},
-    "Mercimek Çorbası (1 Kase)": {"kcal": 150, "p": 9, "k": 20, "y": 3}
-}
+# Veritabanı Bağlantısı ve Tablo Oluşturma
+def init_db():
+    conn = sqlite3.connect('klinik_veritabani.db')
+    c = conn.cursor()
+    # Danışanlar Tablosu
+    c.execute('''CREATE TABLE IF NOT EXISTS danisanlar
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  tarih TEXT, 
+                  ad_soyad TEXT, 
+                  cinsiyet TEXT, 
+                  yas INTEGER, 
+                  boy REAL, 
+                  kilo REAL, 
+                  bmh REAL, 
+                  tdee REAL, 
+                  hedef_kalori INTEGER, 
+                  ideal_kilo REAL,
+                  notlar TEXT)''')
+    conn.commit()
+    conn.close()
 
-# --- FONKSİYONLAR ---
-def bmh_hesapla(cinsiyet, kilo, boy, yas):
-    # Mifflin-St Jeor Denklemi
-    if cinsiyet == "Erkek":
-        return (10 * kilo) + (6.25 * boy) - (5 * yas) + 5
-    else:
-        return (10 * kilo) + (6.25 * boy) - (5 * yas) - 161
+init_db()
 
-def pdf_indir(ad, bmh, tdee, hedef_kal, hedef_aciklama, df_menu):
-    pdf = FPDF()
-    pdf.add_page()
-    
-    # Türkçe karakter düzeltme fonksiyonu
-    def tr(text):
-        return text.encode('latin-1', 'replace').decode('latin-1')
+# --- PROFESYONEL HESAPLAMA MOTORU ---
+class MetabolikMotor:
+    def __init__(self, cinsiyet, kilo, boy, yas, aktivite_katsayisi):
+        self.cinsiyet = cinsiyet
+        self.kilo = kilo
+        self.boy = boy
+        self.yas = yas
+        self.akt = aktivite_katsayisi
 
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, tr(f"DIYETISYEN RAPORU: {ad}"), ln=True, align='C')
-    pdf.ln(5)
+    def bmh_hesapla(self):
+        # Mifflin-St Jeor Denklemi (Altın Standart)
+        base = (10 * self.kilo) + (6.25 * self.boy) - (5 * self.yas)
+        if self.cinsiyet == "Erkek":
+            return base + 5
+        return base - 161
+
+    def ideal_kilo_hesapla(self):
+        # Robinson Formülü (Alternatif: BMI 22 hedefi)
+        # Boya göre sağlıklı aralığın ortası (BMI 22) en güvenli yöntemdir.
+        boy_m = self.boy / 100
+        return round(22 * (boy_m ** 2), 1)
+
+    def su_ihtiyaci(self):
+        # Kg başına 33ml (Ortalama klinik yaklaşım)
+        return round(self.kilo * 0.033, 2)
+
+    def bmi_analiz(self):
+        boy_m = self.boy / 100
+        bmi = self.kilo / (boy_m ** 2)
+        if bmi < 18.5: return bmi, "Zayıf", "warning"
+        elif 18.5 <= bmi < 24.9: return bmi, "Normal", "success"
+        elif 25 <= bmi < 29.9: return bmi, "Fazla Kilolu", "warning"
+        elif 30 <= bmi < 34.9: return bmi, "Obez (Sınıf 1)", "error"
+        elif 35 <= bmi < 39.9: return bmi, "Obez (Sınıf 2)", "error"
+        else: return bmi, "Morbid Obez", "error"
+
+# --- YARDIMCI FONKSİYONLAR ---
+def danisan_kaydet(data):
+    conn = sqlite3.connect('klinik_veritabani.db')
+    c = conn.cursor()
+    c.execute('''INSERT INTO danisanlar (tarih, ad_soyad, cinsiyet, yas, boy, kilo, bmh, tdee, hedef_kalori, ideal_kilo, notlar)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+              (datetime.date.today(), data['ad'], data['cinsiyet'], data['yas'], data['boy'], 
+               data['kilo'], data['bmh'], data['tdee'], data['hedef'], data['ideal'], data['not']))
+    conn.commit()
+    conn.close()
+    st.success(f"✅ {data['ad']} başarıyla veritabanına kaydedildi!")
+
+# --- SAYFA YAPISI (SIDEBAR) ---
+menu = st.sidebar.radio("Menü", ["1. Yeni Analiz & Diyet", "2. Kayıtlı Danışanlar", "3. Klinik Bilgileri"])
+
+st.sidebar.info("💡 Mifflin-St Jeor Formülü kullanılmaktadır.")
+
+# --- SAYFA 1: YENİ ANALİZ VE DİYET YAZMA ---
+if menu == "1. Yeni Analiz & Diyet":
+    st.title("🩺 Profesyonel Metabolik Analiz")
     
-    pdf.set_font("Arial", '', 12)
-    pdf.cell(0, 8, tr(f"BMH (Bazal Metabolizma): {int(bmh)} kcal"), ln=True)
-    pdf.cell(0, 8, tr(f"Gunluk Enerji Harcamasi: {int(tdee)} kcal"), ln=True)
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 8, tr(f"HEDEF: {hedef_aciklama}"), ln=True)
-    pdf.cell(0, 8, tr(f"Planlanan Kalori: {hedef_kal} kcal"), ln=True)
-    pdf.ln(10)
-    
-    # Tablo
-    pdf.set_font("Arial", 'B', 10)
-    col_w = [80, 30, 30, 40]
-    pdf.cell(col_w[0], 10, "Besin", 1)
-    pdf.cell(col_w[1], 10, "Miktar", 1)
-    pdf.cell(col_w[2], 10, "Kalori", 1)
-    pdf.cell(col_w[3], 10, "P / K / Y", 1)
-    pdf.ln()
-    
-    pdf.set_font("Arial", '', 10)
-    for index, row in df_menu.iterrows():
-        besin_adi = tr(row['Besin'])
-        pdf.cell(col_w[0], 10, besin_adi, 1)
-        pdf.cell(col_w[1], 10, str(row['Miktar']), 1)
-        pdf.cell(col_w[2], 10, str(int(row['Kalori'])), 1)
-        pdf.cell(col_w[3], 10, f"{int(row['Prot'])}/{int(row['Karb'])}/{int(row['Yag'])}", 1)
-        pdf.ln()
+    # Giriş Formu
+    with st.form("analiz_formu"):
+        c1, c2, c3 = st.columns(3)
+        ad_soyad = c1.text_input("Danışan Adı Soyadı")
+        cinsiyet = c2.selectbox("Cinsiyet", ["Kadın", "Erkek"])
+        yas = c3.number_input("Yaş", 10, 90, 30)
         
-    return pdf.output(dest="S").encode("latin-1")
-
-# --- ARAYÜZ ---
-st.title("🥗 Diyetisyen Asistanı Pro v2.0")
-st.markdown("Bu uygulama **Mifflin-St Jeor** formülünü ve **7700 kcal kuralını** kullanır.")
-
-# 1. SOL SÜTUN: KİŞİSEL BİLGİLER
-col_sol, col_sag = st.columns([1, 2])
-
-with col_sol:
-    st.subheader("1. Danışan Profili")
-    ad = st.text_input("Ad Soyad")
-    cinsiyet = st.selectbox("Cinsiyet", ["Kadın", "Erkek"])
-    yas = st.number_input("Yaş", 10, 100, 30)
-    boy = st.number_input("Boy (cm)", 100, 250, 170)
-    kilo = st.number_input("Kilo (kg)", 30, 200, 80)
-    
-    aktivite_dict = {
-        "Hareketsiz (Masa başı)": 1.2,
-        "Az Hareketli (1-3 gün spor)": 1.375,
-        "Orta Hareketli (3-5 gün spor)": 1.55,
-        "Çok Hareketli (6-7 gün spor)": 1.725,
-        "Sporcu (Çift idman)": 1.9
-    }
-    akt_secim = st.selectbox("Aktivite Durumu", list(aktivite_dict.keys()))
-    katsayi = aktivite_dict[akt_secim]
-    
-    # Temel Hesaplama
-    bmh = bmh_hesapla(cinsiyet, kilo, boy, yas)
-    tdee = bmh * katsayi
-    
-    st.info(f"**BMH:** {int(bmh)} kcal\n\n**TDEE (Günlük Harcama):** {int(tdee)} kcal")
-
-# 2. SAĞ SÜTUN: HEDEF VE PLANLAMA
-with col_sag:
-    st.subheader("2. Hedef Belirleme")
-    
-    hedef_tipi = st.radio("Diyet Amacı Nedir?", ["Kilo Vermek", "Kiloyu Korumak", "Kilo Almak"], horizontal=True)
-    
-    hedef_kalori = int(tdee)
-    aciklama = "Mevcut kiloyu koruma"
-    
-    if hedef_tipi == "Kilo Vermek":
-        st.write("📉 **Haftalık Kilo Kaybı Hedefi:**")
-        # Bilimsel veriye göre seçenekler
-        kayip_secenekleri = {
-            "Haftada 0.25 kg (Hafif)": -275,
-            "Haftada 0.50 kg (Standart/Önerilen)": -550,
-            "Haftada 0.75 kg (Hızlı)": -825,
-            "Haftada 1.00 kg (Zorlu)": -1100,
-            "Haftada 1.25 kg (Agresif)": -1375,
-            "Haftada 1.50 kg (Çok Agresif - Uzman Kontrolü)": -1650
+        c4, c5, c6 = st.columns(3)
+        boy = c4.number_input("Boy (cm)", 140, 220, 170)
+        kilo = c5.number_input("Kilo (kg)", 40.0, 200.0, 70.0, step=0.1)
+        bel_cevresi = c6.number_input("Bel Çevresi (cm) [Opsiyonel]", 0, 150, 0)
+        
+        st.markdown("### 🏃 Aktivite & Yaşam Tarzı")
+        aktivite_secenekleri = {
+            "Sedanter (Masa başı, spor yok)": 1.2,
+            "Hafif Aktif (Haftada 1-3 gün hafif egzersiz)": 1.375,
+            "Orta Aktif (Haftada 3-5 gün orta egzersiz)": 1.55,
+            "Çok Aktif (Haftada 6-7 gün ağır egzersiz)": 1.725,
+            "Ekstra Aktif (Fiziksel iş + Çift antrenman)": 1.9
         }
-        secilen_hiz = st.selectbox("Hız Seçiniz:", list(kayip_secenekleri.keys()), index=1)
-        kalori_farki = kayip_secenekleri[secilen_hiz]
-        hedef_kalori = int(tdee + kalori_farki)
-        aciklama = f"{secilen_hiz} hedefleniyor."
+        secilen_akt = st.selectbox("Fiziksel Aktivite Düzeyi (PAL)", list(aktivite_secenekleri.keys()))
+        katsayi = aktivite_secenekleri[secilen_akt]
         
-        # Güvenlik Uyarısı
-        if cinsiyet == "Kadın" and hedef_kalori < 1200:
-            st.error(f"⚠️ DİKKAT: Hesaplanan {hedef_kalori} kcal, kadınlar için önerilen güvenli sınırın (1200 kcal) altındadır!")
-        elif cinsiyet == "Erkek" and hedef_kalori < 1500:
-            st.error(f"⚠️ DİKKAT: Hesaplanan {hedef_kalori} kcal, erkekler için önerilen güvenli sınırın (1500 kcal) altındadır!")
-        elif hedef_kalori < bmh:
-            st.warning("⚠️ Uyarı: Hedef kalori Bazal Metabolizma Hızının (BMH) altında. Uzun vadede metabolik adaptasyona sebep olabilir.")
-            
-    elif hedef_tipi == "Kilo Almak":
-        st.write("📈 **Haftalık Kilo Alma Hedefi:**")
-        kazanc_secenekleri = {
-            "Haftada 0.25 kg (Temiz Büyüme)": 275,
-            "Haftada 0.50 kg (Standart)": 550,
-            "Haftada 1.00 kg (Dirty Bulk)": 1100
+        ozel_not = st.text_area("Klinik Notlar (Hastalık, Alerji vb.)")
+        
+        hesapla_btn = st.form_submit_button("Analizi Başlat")
+
+    # Sonuç Ekranı
+    if hesapla_btn and ad_soyad:
+        motor = MetabolikMotor(cinsiyet, kilo, boy, yas, katsayi)
+        bmh = motor.bmh_hesapla()
+        tdee = bmh * katsayi
+        bmi, bmi_durum, renk = motor.bmi_analiz()
+        ideal_kilo = motor.ideal_kilo_hesapla()
+        su = motor.su_ihtiyaci()
+
+        # Verileri Session State'e atalım (Kaydetme butonu için)
+        st.session_state['sonuc_data'] = {
+            'ad': ad_soyad, 'cinsiyet': cinsiyet, 'yas': yas, 'boy': boy, 
+            'kilo': kilo, 'bmh': bmh, 'tdee': tdee, 'ideal': ideal_kilo, 'not': ozel_not
         }
-        secilen_hiz = st.selectbox("Hız Seçiniz:", list(kazanc_secenekleri.keys()))
-        kalori_farki = kazanc_secenekleri[secilen_hiz]
-        hedef_kalori = int(tdee + kalori_farki)
-        aciklama = f"{secilen_hiz} hedefleniyor."
 
-    st.success(f"🎯 **Günlük Hedef Kalori: {hedef_kalori} kcal**")
-    
-    st.divider()
-    
-    # MAKRO AYARLARI
-    st.subheader("3. Makro Dağılımı")
-    mk1, mk2, mk3 = st.columns(3)
-    k_yuzde = mk1.number_input("% Karbonhidrat", value=50, step=5)
-    p_yuzde = mk2.number_input("% Protein", value=20, step=5)
-    y_yuzde = mk3.number_input("% Yağ", value=30, step=5)
-    
-    if k_yuzde + p_yuzde + y_yuzde != 100:
-        st.error("Yüzdeler toplamı 100 olmalı!")
-    else:
-        h_k_g = int((hedef_kalori * k_yuzde / 100) / 4)
-        h_p_g = int((hedef_kalori * p_yuzde / 100) / 4)
-        h_y_g = int((hedef_kalori * y_yuzde / 100) / 9)
-        st.caption(f"Plan: **{h_k_g}g Karb | {h_p_g}g Prot | {h_y_g}g Yağ**")
-
-st.divider()
-
-# 3. ALT KISIM: MENÜ OLUŞTURMA
-st.subheader("4. Menü Planlama")
-
-if 'menu' not in st.session_state:
-    st.session_state.menu = []
-
-c_besin, c_miktar, c_btn = st.columns([2, 1, 1])
-secilen_besin = c_besin.selectbox("Besin Ekle", list(BESINLER.keys()))
-miktar = c_miktar.number_input("Porsiyon Çarpanı", 0.25, 10.0, 1.0, step=0.25)
-
-if c_btn.button("Listeye Ekle"):
-    vals = BESINLER[secilen_besin]
-    st.session_state.menu.append({
-        "Besin": secilen_besin,
-        "Miktar": miktar,
-        "Kalori": vals['kcal'] * miktar,
-        "Prot": vals['p'] * miktar,
-        "Karb": vals['k'] * miktar,
-        "Yag": vals['y'] * miktar
-    })
-
-# Tablo ve Hesaplar
-if st.session_state.menu:
-    df = pd.DataFrame(st.session_state.menu)
-    st.dataframe(df, use_container_width=True)
-    
-    top_kal = df['Kalori'].sum()
-    top_p = df['Prot'].sum()
-    top_k = df['Karb'].sum()
-    top_y = df['Yag'].sum()
-    
-    # Durum Göstergeleri
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Kalori", f"{int(top_kal)}", f"{int(top_kal - hedef_kalori)}")
-    m2.metric("Protein", f"{int(top_p)}g", f"{int(top_p - h_p_g)}")
-    m3.metric("Karb", f"{int(top_k)}g", f"{int(top_k - h_k_g)}")
-    m4.metric("Yağ", f"{int(top_y)}g", f"{int(top_y - h_y_g)}")
-    
-    col_btn1, col_btn2 = st.columns(2)
-    if col_btn1.button("🗑️ Menüyü Temizle"):
-        st.session_state.menu = []
-        st.rerun()
+        st.divider()
+        st.subheader(f"📊 Rapor: {ad_soyad}")
         
-    if ad:
-        pdf_data = pdf_indir(ad, bmh, tdee, hedef_kalori, aciklama, df)
-        col_btn2.download_button(label="📄 PDF Raporu İndir", data=pdf_data, file_name=f"diyet_{ad}.pdf", mime="application/pdf")
-else:
-    st.info("Henüz menüye bir besin eklenmedi.")
+        # Metrikler
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("VKİ (BMI)", f"{bmi:.1f}", bmi_durum)
+        col2.metric("İdeal Kilo", f"{ideal_kilo} kg", f"{kilo - ideal_kilo:.1f} kg fark")
+        col3.metric("BMH", f"{int(bmh)} kcal")
+        col4.metric("Günlük Enerji", f"{int(tdee)} kcal")
+        
+        # Detaylı Bilgi Kutusu
+        st.info(f"💧 **Günlük Su Hedefi:** {su} Litre | 🩺 **Bel Risk Analizi:** {'Girilmedi' if bel_cevresi==0 else ('Riskli' if bel_cevresi > (102 if cinsiyet=='Erkek' else 88) else 'Normal')}")
+
+        # Hedef Belirleme Kısmı
+        st.markdown("### 🎯 Diyet Planlaması")
+        hedef_tipi = st.selectbox("Hedef Seçimi", ["Kilo Vermek", "Korumak", "Kilo Almak"])
+        
+        hedef_kalori = int(tdee)
+        if hedef_tipi == "Kilo Vermek":
+            kalori_acigi = st.slider("Kalori Açığı (Defisit)", 200, 1000, 500, step=50)
+            hedef_kalori = int(tdee - kalori_acigi)
+            st.warning(f"Planlanan: Günlük -{kalori_acigi} kcal açık ile haftada yaklaşık {kalori_acigi/1100:.1f} kg kayıp.")
+        elif hedef_tipi == "Kilo Almak":
+            kalori_fazlasi = st.slider("Kalori Fazlası (Surplus)", 200, 1000, 300, step=50)
+            hedef_kalori = int(tdee + kalori_fazlasi)
+        
+        st.session_state['sonuc_data']['hedef'] = hedef_kalori
+        
+        st.success(f"🥗 **Yazılacak Diyet Kalorisi: {hedef_kalori} kcal**")
+        
+        # Kaydet Butonu
+        if st.button("💾 Bu Danışanı Veritabanına Kaydet"):
+            danisan_kaydet(st.session_state['sonuc_data'])
+
+# --- SAYFA 2: KAYITLI DANIŞANLAR (CRM) ---
+elif menu == "2. Kayıtlı Danışanlar":
+    st.title("📂 Hasta / Danışan Kayıtları")
+    
+    conn = sqlite3.connect('klinik_veritabani.db')
+    df = pd.read_sql_query("SELECT * FROM danisanlar ORDER BY tarih DESC", conn)
+    conn.close()
+    
+    if not df.empty:
+        # Arama Kutusu
+        arama = st.text_input("İsimle Ara:")
+        if arama:
+            df = df[df['ad_soyad'].str.contains(arama, case=False)]
+        
+        st.dataframe(df)
+        
+        st.markdown("### 📥 Veri İşlemleri")
+        col1, col2 = st.columns(2)
+        
+        # Excel İndirme
+        csv = df.to_csv(index=False).encode('utf-8')
+        col1.download_button("Listeyi Excel (CSV) Olarak İndir", csv, "danisan_listesi.csv", "text/csv")
+        
+        # Silme İşlemi
+        silinecek_id = col2.number_input("Silinecek ID Numarası", min_value=0, step=1)
+        if col2.button("Kaydı Sil"):
+            conn = sqlite3.connect('klinik_veritabani.db')
+            c = conn.cursor()
+            c.execute("DELETE FROM danisanlar WHERE id=?", (silinecek_id,))
+            conn.commit()
+            conn.close()
+            st.warning(f"ID {silinecek_id} silindi. Sayfayı yenileyin.")
+            st.rerun()
+    else:
+        st.info("Henüz kayıtlı danışan bulunmamaktadır.")
+
+# --- SAYFA 3: KLİNİK BİLGİLERİ ---
+elif menu == "3. Klinik Bilgileri":
+    st.title("ℹ️ Bilimsel Referanslar")
+    st.markdown("""
+    Bu program aşağıdaki bilimsel kılavuzları baz alır:
+    
+    1.  **BMH Hesaplaması:** Mifflin-St Jeor Denklemi (2005 yılında ADA tarafından en doğru formül kabul edilmiştir).
+    2.  **Aktivite Çarpanları (PAL):** WHO (Dünya Sağlık Örgütü) fiziksel aktivite seviyeleri.
+    3.  **İdeal Kilo:** Hamwi Yöntemi ve BMI 22 (Sağlıklı Aralık Ortası) baz alınmıştır.
+    4.  **Sıvı İhtiyacı:** 30-35 ml/kg genel klinik yaklaşımı.
+    
+    **Geliştirici Notu:** Bu yazılım klinik karar destek sistemidir. Kesin tanı ve tedavi için hekim onayı ve diyetisyen yorumu esastır.
+    """)
