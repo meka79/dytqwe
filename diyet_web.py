@@ -39,4 +39,177 @@ def detayli_analiz(cinsiyet, kilo, boy, yas, akt_katsayi):
     bmi = kilo / (boy_m ** 2)
     
     # 2. İdeal Aralık
-    i
+    ideal_min = 18.5 * (boy_m ** 2)
+    ideal_max = 24.9 * (boy_m ** 2)
+    
+    # 3. Mifflin-St Jeor (Mevcut Kilo)
+    base_mevcut = (10 * kilo) + (6.25 * boy) - (5 * yas)
+    bmh_mevcut = base_mevcut + 5 if cinsiyet == "Erkek" else base_mevcut - 161
+    
+    # 4. Mifflin-St Jeor (İdeal Kilo Ref)
+    ideal_kilo_ref = 22 * (boy_m ** 2)
+    base_ideal = (10 * ideal_kilo_ref) + (6.25 * boy) - (5 * yas)
+    bmh_ideal = base_ideal + 5 if cinsiyet == "Erkek" else base_ideal - 161
+    
+    tdee = bmh_mevcut * akt_katsayi
+    
+    return {
+        "bmi": bmi,
+        "ideal_aralik": (ideal_min, ideal_max),
+        "bmh_mevcut": bmh_mevcut,
+        "bmh_ideal": bmh_ideal,
+        "tdee": tdee
+    }
+
+def tarih_hesapla(hafta_sayisi):
+    bugun = datetime.date.today()
+    bitis_tarihi = bugun + timedelta(weeks=hafta_sayisi)
+    return bitis_tarihi.strftime("%d.%m.%Y")
+
+# --- ARAYÜZ ---
+if 'analiz_yapildi' not in st.session_state:
+    st.session_state['analiz_yapildi'] = False
+
+menu = st.sidebar.radio("Klinik Paneli", ["1. Danışan Planlama", "2. Veritabanı"])
+
+if menu == "1. Danışan Planlama":
+    st.title("🔬 Profesyonel Diyet Planlayıcı")
+    
+    with st.expander("Danışan Profil ve Ölçümleri", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        ad = c1.text_input("Ad Soyad")
+        cinsiyet = c2.selectbox("Cinsiyet", ["Kadın", "Erkek"])
+        yas = c3.number_input("Yaş", 10, 90, 30)
+        
+        c4, c5, c6 = st.columns(3)
+        boy = c4.number_input("Boy (cm)", 140, 220, 170)
+        kilo = c5.number_input("Mevcut Kilo (kg)", 40.0, 250.0, 100.0, step=0.1)
+        
+        akt_dict = {"Sedanter (1.2)": 1.2, "Hafif (1.375)": 1.375, "Orta (1.55)": 1.55, "Yüksek (1.725)": 1.725}
+        akt_secim = st.selectbox("Aktivite Seviyesi", list(akt_dict.keys()))
+
+        if st.button("Analiz Et", type="primary"):
+            sonuclar = detayli_analiz(cinsiyet, kilo, boy, yas, akt_dict[akt_secim])
+            st.session_state['data'] = {
+                'ad': ad, 'cinsiyet': cinsiyet, 'yas': yas, 'boy': boy, 'kilo': kilo,
+                'analiz': sonuclar, 'akt_katsayi': akt_dict[akt_secim]
+            }
+            st.session_state['analiz_yapildi'] = True
+
+    if st.session_state['analiz_yapildi']:
+        d = st.session_state['data']
+        a = d['analiz']
+        
+        st.divider()
+        
+        # METABOLİK TABLO
+        c_m1, c_m2, c_m3, c_m4 = st.columns(4)
+        
+        bmi_val = a['bmi']
+        bmi_renk = "off"
+        if bmi_val < 18.5: bmi_text="Zayıf"; bmi_renk="off"
+        elif 18.5 <= bmi_val < 25: bmi_text="Normal"; bmi_renk="normal"
+        elif 25 <= bmi_val < 30: bmi_text="Fazla Kilolu"; bmi_renk="inverse"
+        else: bmi_text="Obez"; bmi_renk="inverse"
+
+        c_m1.metric("BMI", f"{bmi_val:.1f}", bmi_text, delta_color=bmi_renk)
+        c_m2.metric("BMH (Mifflin)", f"{int(a['bmh_mevcut'])} kcal")
+        c_m3.metric("İdeal Kilo BMH", f"{int(a['bmh_ideal'])} kcal", help="Referans Amaçlı")
+        c_m4.metric("TDEE (Koruma)", f"{int(a['tdee'])} kcal")
+        
+        st.caption(f"✅ **Tıbbi İdeal Kilo Aralığı:** {a['ideal_aralik'][0]:.1f} kg - {a['ideal_aralik'][1]:.1f} kg")
+        
+        st.divider()
+
+        # PLANLAMA
+        c_h1, c_h2 = st.columns([1, 2])
+        
+        with c_h1:
+            st.subheader("🎯 Hedef")
+            hedef_kilo = st.number_input("Hedef Kilo (kg)", 40.0, 250.0, value=d['kilo'], step=0.5)
+            kilo_farki = hedef_kilo - d['kilo']
+            
+            durum = ""
+            if kilo_farki < 0: durum = "Kilo Vermeli 📉"
+            elif kilo_farki > 0: durum = "Kilo Almalı 📈"
+            else: durum = "Korumalı 🛡️"
+            st.info(f"Fark: {abs(kilo_farki):.1f} kg ({durum})")
+
+        with c_h2:
+            st.subheader("⚡ Strateji")
+            
+            final_kalori = int(a['tdee'])
+            tahmini_hafta = 0
+            
+            if kilo_farki < 0: # KİLO VERME
+                hiz = st.selectbox("Kilo Verme Hızı", ["Yavaş (-0.25)", "Standart (-0.5)", "Hızlı (-0.75)", "Agresif (-1.0)"], index=1)
+                acik_map = {"Yavaş (-0.25)": 275, "Standart (-0.5)": 550, "Hızlı (-0.75)": 825, "Agresif (-1.0)": 1100}
+                acik = acik_map[hiz]
+                final_kalori = int(a['tdee'] - acik)
+                haftalik_kayip = (acik * 7) / 7700
+                tahmini_hafta = abs(kilo_farki) / haftalik_kayip
+                
+                # Güvenlik Kontrolü
+                if final_kalori < a['bmh_mevcut']:
+                    if bmi_val >= 30:
+                        st.success(f"✅ Obezite durumunda, hedef kalori BMH'nin ({int(a['bmh_mevcut'])}) altına inebilir.")
+                    elif bmi_val >= 25:
+                         st.warning(f"⚠️ Hedef kalori BMH'nin biraz altında. Uygulanabilir.")
+                    else:
+                        st.error(f"⛔ HATA: Zayıf/Normal bireylerde BMH ({int(a['bmh_mevcut'])}) altına düşmeyiniz!")
+                else:
+                    st.success("✅ Kalori hedefi BMH'nin üzerinde, güvenli.")
+
+            elif kilo_farki > 0: # KİLO ALMA
+                hiz = st.selectbox("Kilo Alma Hızı", ["Yavaş (+0.25)", "Standart (+0.5)"])
+                fazla_map = {"Yavaş (+0.25)": 275, "Standart (+0.5)": 550}
+                fazla = fazla_map[hiz]
+                final_kalori = int(a['tdee'] + fazla)
+                haftalik_kazanc = (fazla * 7) / 7700
+                tahmini_hafta = abs(kilo_farki) / haftalik_kazanc
+
+            # --- TASARIM DÜZELTMESİ YAPILAN KISIM ---
+            tarih_str = tarih_hesapla(tahmini_hafta) if tahmini_hafta > 0 else "Hedefte"
+            hafta_bilgisi = f"({int(tahmini_hafta)} Hafta)" if tahmini_hafta > 0 else ""
+            
+            # HTML/CSS ile Özel Tasarım Kartı (Karanlık Mod Uyumlu)
+            st.markdown(f"""
+            <div style="
+                border: 2px solid #4CAF50;
+                padding: 20px;
+                border-radius: 10px;
+                background-color: #1E1E1E; /* Koyu Arka Plan Sabitlendi */
+                text-align: center;
+                font-family: sans-serif;
+                color: white;
+                margin-top: 10px;
+            ">
+                <h1 style="margin:0; color:#4CAF50; font-size: 48px;">{final_kalori} kcal</h1>
+                <p style="margin:0; font-size: 18px; opacity: 0.8;">Günlük Beslenme Hedefi</p>
+                <hr style="border-color: #4CAF50; margin: 15px 0;">
+                <p style="font-size: 16px;">📅 Tahmini Bitiş: <b>{tarih_str}</b> {hafta_bilgisi}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            # -----------------------------------------
+
+            if st.button("💾 Kaydet"):
+                try:
+                    conn = sqlite3.connect(DB_NAME)
+                    c = conn.cursor()
+                    c.execute('''INSERT INTO danisanlar (tarih, ad_soyad, cinsiyet, yas, boy, 
+                                 baslangic_kilo, hedef_kilo, bmi, bmh_mevcut, tdee, planlanan_kalori, notlar)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                              (datetime.date.today(), d['ad'], d['cinsiyet'], d['yas'], d['boy'], 
+                               d['kilo'], hedef_kilo, bmi_val, a['bmh_mevcut'], a['tdee'], final_kalori, "Plan Kaydedildi"))
+                    conn.commit()
+                    conn.close()
+                    st.success("Veritabanına İşlendi!")
+                except Exception as e:
+                    st.error(e)
+
+elif menu == "2. Veritabanı":
+    st.title("📂 Danışan Kayıtları")
+    conn = sqlite3.connect(DB_NAME)
+    df = pd.read_sql_query("SELECT * FROM danisanlar ORDER BY id DESC", conn)
+    conn.close()
+    st.dataframe(df)
