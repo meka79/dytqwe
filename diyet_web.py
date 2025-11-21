@@ -355,4 +355,5 @@ elif menu == "2. Danışan Dosyası (Takip)":
                 st.subheader("📋 Kayıt Detayları & Düzenleme")
                 
                 # İSTEK 4: Tarih formatı zaten veritabanında YYYY-MM-DD HH:MM olduğu için tabloda saatli görünecek
-                st.dataframe(df[['id', 'tarih',
+                st.dataframe(df[['id', 'tarih',]
+
